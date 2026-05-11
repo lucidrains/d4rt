@@ -1,3 +1,5 @@
+<img src="./d4rt.png" width="400px"></img>
+
 ## d4rt (wip)
 
 Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, Deepmind
