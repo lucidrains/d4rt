@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn, pi, is_tensor
 from torch.nn import Module, ModuleList, Sequential
 
 from x_transformers import Encoder, CrossAttender, Attention, FeedForward
@@ -18,6 +18,55 @@ from torch_einops_utils import pack_with_inverse
 
 def exists(v):
     return v is not None
+
+def divisible_by(num, den):
+    return (num % den) == 0
+
+# function for the patch embedding in the query
+
+def extract_patches(video, coors, time_src, patch_size):
+    b, q, p, device = *time_src.shape, patch_size, video.device
+
+    padded_video = F.pad(video, (p,) * 4)
+    coors_with_padding = coors + p
+
+    batch_inds = rearrange(torch.arange(b, device = device), 'b -> b 1 1 1')
+    time_inds = rearrange(time_src, 'b q -> b q 1 1')
+
+    dy = rearrange(torch.arange(p, device = device), 'p -> 1 1 p 1')
+    dx = rearrange(torch.arange(p, device = device), 'p -> 1 1 1 p')
+
+    y, x = coors_with_padding.unbind(dim = -1)
+    y = rearrange(y, 'b q -> b q 1 1') + dy
+    x = rearrange(x, 'b q -> b q 1 1') + dx
+
+    patches = padded_video[batch_inds, time_inds, :, y, x]
+    return rearrange(patches, 'b q p1 p2 c -> b q c p1 p2')
+
+# fourier embed
+
+class FourierEmbed(Module):
+    def __init__(
+        self,
+        dim
+    ):
+        super().__init__()
+        assert divisible_by(dim, 2)
+
+        self.proj = nn.Sequential(
+            Rearrange('... -> ... 1'),
+            nn.Linear(1, dim // 2)
+        )
+
+        self.proj.requires_grad_(False)
+
+    def forward(
+        self,
+        coors,
+    ):
+        rand_proj = self.proj(coors.float())
+        rand_proj = rearrange(rand_proj, '... two d -> ... (two d)')
+        return torch.cos(2 * pi * rand_proj)
 
 # video self attention encoder
 
@@ -108,6 +157,7 @@ class D4RT(Module):
         video_max_time_len,
         enc_depth,
         dec_depth,
+        video_channels = 3,
         enc_dim_head = 64,
         enc_heads = 8,
         dec_dim_head = 64,
@@ -118,6 +168,24 @@ class D4RT(Module):
     ):
         super().__init__()
 
+        # to queries
+
+        self.video_patch_size = video_patch_size
+
+        self.to_query_patch_embed = nn.Sequential(
+            Rearrange('b q c p1 p2 -> b q (c p1 p2)'),
+            nn.Linear(video_channels * video_patch_size * video_patch_size, dim, bias = False)
+        )
+
+        self.coor_fourier_embed = FourierEmbed(dim)
+        self.time_src_embed = nn.Parameter(torch.randn(video_max_time_len, dim) * 1e-2)
+        self.time_tgt_embed = nn.Parameter(torch.randn(video_max_time_len, dim) * 1e-2)
+        self.time_camera_embed = nn.Parameter(torch.randn(video_max_time_len, dim) * 1e-2)
+
+        self.norm_queries = nn.LayerNorm(dim, bias = False)
+
+        # encoder
+
         self.to_global_spatial_repr = VideoEncoder(
             dim = dim,
             depth = enc_depth,
@@ -126,9 +194,12 @@ class D4RT(Module):
             image_size = video_image_size,
             patch_size = video_patch_size,
             max_time_len = video_max_time_len,
+            channels = video_channels,
             attn_kwargs = video_enc_attn_kwargs,
             ff_kwargs = video_enc_ff_kwargs
         )
+
+        # decoder
 
         self.cross_attender = CrossAttender(
             dim = dim,
@@ -138,15 +209,41 @@ class D4RT(Module):
             **cross_attender_kwargs
         )
 
+        # prediction
+
         self.to_pred = nn.Linear(dim, 3, bias = False)
 
     def forward(
         self,
         video,              # float[b t c h w]
-        queries,            # float[b q d]
+        *,
+        coors = None,       # int[b q 2]
+        time_src = None,    # int[b q]
+        time_tgt = None,    # int[b q]
+        time_camera = None, # int[b q]
+        queries = None,     # float[b q d]
         points = None,      # float[b q 3]
         return_pred = False
     ):
+        assert (
+            exists(queries) or
+            all([exists(p) for p in (coors, time_src, time_tgt, time_camera)])
+        ), 'either `queries` is passed in, or you pass in all the needed inputs to compose the query'
+
+        if not exists(queries):
+            patch_size = self.video_patch_size
+
+            patches = extract_patches(video, coors, time_src, patch_size)
+
+            queries = (
+                self.to_query_patch_embed(patches) +
+                self.coor_fourier_embed(coors) +
+                self.time_src_embed[time_src] +
+                self.time_tgt_embed[time_tgt] +
+                self.time_camera_embed[time_camera]
+            )
+
+            queries = self.norm_queries(queries)
 
         global_spatial_repr = self.to_global_spatial_repr(video)
 
