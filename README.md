@@ -4,6 +4,46 @@
 
 Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, Deepmind
 
+## install
+
+```shell
+$ pip install d4rt
+```
+
+## usage
+
+```python
+import torch
+from d4rt import D4RT
+
+model = D4RT(
+    dim = 512,
+    video_image_size = 128,
+    video_patch_size = 32,
+    video_max_time_len = 10,
+    enc_depth = 6,
+    dec_depth = 6
+)
+
+videos = torch.randn(2, 10, 3, 128, 128)
+points = torch.randn(2, 5, 3)
+queries = torch.randn(2, 5, 512)
+
+loss = model(
+    videos,
+    coors = torch.randint(0, 128, (2, 5, 2)),
+    time_src = torch.randint(0, 10, (2, 5)),
+    time_tgt = torch.randint(0, 10, (2, 5)),
+    time_camera = torch.randint(0, 10, (2, 5)),
+    points = points
+)
+
+loss.backward()
+
+pred = model(videos, queries = queries) # (2, 5, 3)
+assert pred.shape == (2, 5, 3)
+```
+
 ## citations
 
 ```bibtex
