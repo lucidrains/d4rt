@@ -11,7 +11,7 @@ license = { file = "LICENSE" }
 keywords = [
     'artificial intelligence',
     'deep learning',
-    'point clouds'
+    '4d'
 ]
 
 classifiers=[
@@ -27,7 +27,7 @@ dependencies = [
     "einops>=0.8.1",
     "torch>=2.5",
     "torch-einops-utils>=0.0.32",
-    "x-transformers"
+    "x-transformers>=2.18.10"
 ]
 
 [project.urls]

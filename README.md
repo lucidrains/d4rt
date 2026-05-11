@@ -12,3 +12,13 @@ Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstruct
     year    = {2025}
 }
 ```
+
+```bibtex
+@inproceedings{liu2026geometryaware,
+    title   = {Geometry-aware 4D Video Generation for Robot Manipulation},
+    author  = {Zeyi Liu and Shuang Li and Eric Cousineau and Siyuan Feng and Benjamin Burchfiel and Shuran Song},
+    booktitle = {The Fourteenth International Conference on Learning Representations},
+    year    = {2026},
+    url     = {https://openreview.net/forum?id=18gC6pZVVc}
+}
+```
