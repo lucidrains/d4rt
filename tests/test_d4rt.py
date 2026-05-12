@@ -46,3 +46,6 @@ def test_d4rt(
 
     pred = model(videos, coors = coors, time_src = time_src, time_tgt = time_tgt, time_camera = time_camera) # (2, 5, 3)
     assert pred.shape == (2, 5, 3)
+
+    _, hiddens = model.to_global_spatial_repr(videos, return_hiddens = True)
+    assert isinstance(hiddens, list)
