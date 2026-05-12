@@ -10,9 +10,9 @@ from x_transformers import Encoder, CrossAttender, Attention, FeedForward
 # ein notation
 
 import einx
-from einops import rearrange
+from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-from torch_einops_utils import pack_with_inverse
+from torch_einops_utils import pack_with_inverse, lens_to_mask, maybe
 
 # helpers
 
@@ -24,7 +24,12 @@ def divisible_by(num, den):
 
 # function for the patch embedding in the query
 
-def extract_patches(video, coors, time_src, patch_size):
+def extract_patches(
+    video,      # float[b t c h w]
+    coors,      # int[b q 2]
+    time_src,   # int[b q]
+    patch_size
+):
     b, q, p, device = *time_src.shape, patch_size, video.device
 
     padded_video = F.pad(video, (p,) * 4)
@@ -112,10 +117,14 @@ class VideoEncoder(Module):
 
     def forward(
         self,
-        video # float[b t c h w]
+        video,      # float[b t c h w],
+        mask = None # bool[b t]
     ): # float[b n d]
 
         tokens = self.patch_to_tokens(video) # float[b t s d]
+
+        if exists(mask):
+            mask = repeat(mask, 'b ... -> (b s) ...', s = tokens.shape[-2])
 
         for spatial_attn, time_attn, ff in self.layers:
 
@@ -133,7 +142,7 @@ class VideoEncoder(Module):
 
             tokens, inverse_pack = pack_with_inverse(tokens, '* t d')
 
-            tokens = time_attn(tokens) + tokens
+            tokens = time_attn(tokens,  mask = mask) + tokens
 
             tokens = inverse_pack(tokens)
 
@@ -223,8 +232,12 @@ class D4RT(Module):
         time_camera = None, # int[b q]
         queries = None,     # float[b q d]
         points = None,      # float[b q 3]
-        return_pred = False
+        return_pred = False,
+        video_lens = None   # int[b]
     ):
+
+        # embedding to queries
+
         assert (
             exists(queries) or
             all([exists(p) for p in (coors, time_src, time_tgt, time_camera)])
@@ -245,11 +258,20 @@ class D4RT(Module):
 
             queries = self.norm_queries(queries)
 
-        global_spatial_repr = self.to_global_spatial_repr(video)
+        # self attention
+
+        time = video.shape[1]
+        video_mask = maybe(lens_to_mask)(video_lens, time)
+
+        global_spatial_repr = self.to_global_spatial_repr(video, mask = video_mask)
 
         global_spatial_repr, inverse_pack_spacetime = pack_with_inverse(global_spatial_repr, 'b * d')
 
+        # cross attention
+
         queried = self.cross_attender(queries, context = global_spatial_repr)
+
+        # prediction
 
         pred = self.to_pred(queried)
 
