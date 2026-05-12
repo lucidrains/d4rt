@@ -233,8 +233,10 @@ class D4RT(Module):
         queries = None,     # float[b q d]
         points = None,      # float[b q 3]
         return_pred = False,
-        video_lens = None   # int[b]
+        video_lens = None,  # int[b]
+        query_lens = None   # int[b q]
     ):
+        max_time = video.shape[1]
 
         # embedding to queries
 
@@ -258,10 +260,11 @@ class D4RT(Module):
 
             queries = self.norm_queries(queries)
 
+        max_queries = queries.shape[1]
+
         # self attention
 
-        time = video.shape[1]
-        video_mask = maybe(lens_to_mask)(video_lens, time)
+        video_mask = maybe(lens_to_mask)(video_lens, max_time)
 
         global_spatial_repr = self.to_global_spatial_repr(video, mask = video_mask)
 
@@ -269,7 +272,12 @@ class D4RT(Module):
 
         # cross attention
 
-        queried = self.cross_attender(queries, context = global_spatial_repr)
+        global_spatial_repr_mask = None
+
+        if exists(video_mask):
+            global_spatial_repr_mask = repeat(video_mask, 'b t -> b (t s)', s = global_spatial_repr.shape[1] // video_mask.shape[1])
+
+        queried = self.cross_attender(queries, context = global_spatial_repr, context_mask = global_spatial_repr_mask)
 
         # prediction
 
@@ -278,7 +286,13 @@ class D4RT(Module):
         if not exists(points):
             return pred
 
-        loss = F.mse_loss(pred, points)
+        query_mask = maybe(lens_to_mask)(query_lens, max_queries)
+        var_len_queries = exists(query_mask)
+
+        loss = F.mse_loss(pred, points, reduction = 'none' if var_len_queries else 'mean')
+
+        if var_len_queries:
+            loss = loss[query_mask].mean()
 
         if not return_pred:
             return loss

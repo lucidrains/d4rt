@@ -13,8 +13,8 @@ $ pip install d4rt
 ## usage
 
 ```python
-import torch
-from d4rt import D4RT
+from torch import randn, randint
+from d4rt.d4rt import D4RT
 
 model = D4RT(
     dim = 512,
@@ -25,22 +25,46 @@ model = D4RT(
     dec_depth = 6
 )
 
-videos = torch.randn(2, 10, 3, 128, 128)
-points = torch.randn(2, 5, 3)
-queries = torch.randn(2, 5, 512)
+videos = randn(2, 10, 3, 128, 128)
+
+video_lens = randint(2, 10, (2,)) # handle variable lengthed video, can be None for max length always
+
+# inputs
+
+coors = randint(0, 128, (2, 5, 2))
+time_src = randint(0, 10, (2, 5))
+time_tgt = randint(0, 10, (2, 5))
+time_camera = randint(0, 10, (2, 5))
+
+query_lens = randint(1, 5, (2,)) # handle varaible lengthed queries
+
+# output
+
+points = randn(2, 5, 3)
 
 loss = model(
     videos,
-    coors = torch.randint(0, 128, (2, 5, 2)),
-    time_src = torch.randint(0, 10, (2, 5)),
-    time_tgt = torch.randint(0, 10, (2, 5)),
-    time_camera = torch.randint(0, 10, (2, 5)),
-    points = points
+    video_lens = video_lens,
+    coors = coors,
+    time_src = time_src,
+    time_tgt = time_tgt,
+    time_camera = time_camera,
+    query_lens = query_lens,
+    points = points,
 )
 
 loss.backward()
 
-pred = model(videos, queries = queries) # (2, 5, 3)
+# without giving the output, it returns the prediction
+
+pred = model(
+    videos,
+    coors = coors,
+    time_src = time_src,
+    time_tgt = time_tgt,
+    time_camera = time_camera
+)
+
 assert pred.shape == (2, 5, 3)
 ```
 

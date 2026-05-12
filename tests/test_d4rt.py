@@ -2,8 +2,10 @@ import pytest
 param = pytest.mark.parametrize
 
 @param('variable_len_videos', (False, True))
+@param('variable_len_queries', (False, True))
 def test_d4rt(
-    variable_len_videos
+    variable_len_videos,
+    variable_len_queries
 ):
     import torch
     from d4rt.d4rt import D4RT
@@ -25,6 +27,7 @@ def test_d4rt(
     time_src = torch.randint(0, 10, (2, 5))
     time_tgt = torch.randint(0, 10, (2, 5))
     time_camera = torch.randint(0, 10, (2, 5))
+    query_lens = torch.randint(1, 5, (2,)) if variable_len_queries else None
 
     points = torch.randn(2, 5, 3)
 
@@ -35,7 +38,8 @@ def test_d4rt(
         time_tgt = time_tgt,
         time_camera = time_camera,
         points = points,
-        video_lens = video_lens
+        video_lens = video_lens,
+        query_lens = query_lens,
     )
 
     loss.backward()
