@@ -88,3 +88,15 @@ assert pred.shape == (2, 5, 3)
     url     = {https://openreview.net/forum?id=18gC6pZVVc}
 }
 ```
+
+```bibtex
+@misc{joseph2026interpretingphysicsvideoworld,
+    title   = {Interpreting Physics in Video World Models},
+    author  = {Sonia Joseph and Quentin Garrido and Randall Balestriero and Matthew Kowal and Thomas Fel and Shahab Bakhtiari and Blake Richards and Mike Rabbat},
+    year    = {2026},
+    eprint  = {2602.07050},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CV},
+    url={https://arxiv.org/abs/2602.07050},
+}
+```

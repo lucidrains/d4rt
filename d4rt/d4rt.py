@@ -117,14 +117,17 @@ class VideoEncoder(Module):
 
     def forward(
         self,
-        video,      # float[b t c h w],
-        mask = None # bool[b t]
+        video,                  # float[b t c h w],
+        mask = None,            # bool[b t]
+        return_hiddens = False
     ): # float[b n d]
 
         tokens = self.patch_to_tokens(video) # float[b t s d]
 
         if exists(mask):
             mask = repeat(mask, 'b ... -> (b s) ...', s = tokens.shape[-2])
+
+        hiddens = []
 
         for spatial_attn, time_attn, ff in self.layers:
 
@@ -135,6 +138,8 @@ class VideoEncoder(Module):
             tokens = spatial_attn(tokens) + tokens
 
             tokens = inverse_pack(tokens)
+
+            hiddens.append(tokens)
 
             # time attn
 
@@ -148,11 +153,20 @@ class VideoEncoder(Module):
 
             tokens = rearrange(tokens, 'b s t d -> b t s d')
 
+            hiddens.append(tokens)
+
             # feedforward
 
             tokens = ff(tokens) + tokens
 
-        return self.norm(tokens)
+            hiddens.append(tokens)
+
+        output = self.norm(tokens)
+
+        if not return_hiddens:
+            return output
+
+        return output, hiddens
 
 # main class
 
