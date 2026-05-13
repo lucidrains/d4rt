@@ -1,8 +1,9 @@
 from __future__ import annotations
+from collections import namedtuple
 
 import torch
 import torch.nn.functional as F
-from torch import nn, pi, is_tensor
+from torch import nn, cat, pi, tensor, is_tensor
 from torch.nn import Module, ModuleList, Sequential
 
 from x_transformers import Encoder, CrossAttender, Attention, FeedForward
@@ -12,7 +13,11 @@ from x_transformers import Encoder, CrossAttender, Attention, FeedForward
 import einx
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-from torch_einops_utils import pack_with_inverse, lens_to_mask, maybe
+from torch_einops_utils import pack_with_inverse, lens_to_mask, maybe, pad_right_ndim_to
+
+# constants
+
+Intermediates = namedtuple('Intermediates', ('pred', 'encoded_video', 'queries'))
 
 # helpers
 
@@ -187,7 +192,10 @@ class D4RT(Module):
         dec_heads = 8,
         video_enc_attn_kwargs: dict = dict(),
         video_enc_ff_kwargs: dict = dict(),
-        cross_attender_kwargs: dict = dict()
+        cross_attender_kwargs: dict = dict(),
+        dec_use_flow_matching = False, # turn the decoder into conditional flow matching with clean prediction
+        flow_match_timesteps = 4,
+        flow_match_noise_std = 1.,
     ):
         super().__init__()
 
@@ -209,7 +217,7 @@ class D4RT(Module):
 
         # encoder
 
-        self.to_global_spatial_repr = VideoEncoder(
+        self.video_encoder = VideoEncoder(
             dim = dim,
             depth = enc_depth,
             dim_head = enc_dim_head,
@@ -236,21 +244,101 @@ class D4RT(Module):
 
         self.to_pred = nn.Linear(dim, 3, bias = False)
 
+        # improvisation - turn decoder into conditional flow matching
+
+        self.dec_use_flow_matching = dec_use_flow_matching
+
+        self.flow_match_timesteps = flow_match_timesteps
+        self.flow_match_noise_std = flow_match_noise_std
+
+        self.noised_and_times_to_embed = nn.Linear(4, dim, bias = False) if dec_use_flow_matching else None
+
+        self.register_buffer('zero', tensor(0.), persistent = False)
+
+    @property
+    def device(self):
+        return self.zero.device
+
+    @torch.no_grad()
+    def flow_matching_sample(
+        self,
+        video,
+        *,
+        coors,
+        time_src,
+        time_tgt,
+        time_camera,
+        video_lens,
+        query_lens
+    ):
+        assert self.dec_use_flow_matching
+
+        batch, max_queries, timesteps = *coors.shape[:2], self.flow_match_timesteps
+
+        # pure noise
+
+        noised_points = torch.randn((batch, max_queries, 3), device = self.device) * self.flow_match_noise_std
+
+        # caching
+
+        queries = encoded_video = None
+
+        # times
+
+        delta_time = 1. / timesteps
+
+        times = torch.linspace(0., 1., timesteps, device = self.device)
+
+        for time in times:
+
+            pred, intermediates = self.forward(
+                video,
+                coors = coors,
+                time_src = time_src,
+                time_tgt = time_tgt,
+                time_camera = time_camera,
+                video_lens = video_lens,
+                times = time,
+                noised_points = noised_points,
+                encoded_video = encoded_video,
+                return_intermediates = True
+            )
+
+            flow = (pred - noised_points) / (1. - time).clamp(min = 1e-1)
+
+            noised_points = noised_points + flow * delta_time
+
+            # caching
+
+            encoded_video = intermediates.encoded_video
+            queries = intermediates.queries
+
+        return noised_points
+
     def forward(
         self,
-        video,              # float[b t c h w]
+        video,                # float[b t c h w]
         *,
-        coors = None,       # int[b q 2]
-        time_src = None,    # int[b q]
-        time_tgt = None,    # int[b q]
-        time_camera = None, # int[b q]
-        queries = None,     # float[b q d]
-        points = None,      # float[b q 3]
-        return_pred = False,
-        video_lens = None,  # int[b]
-        query_lens = None   # int[b q]
+        coors = None,         # int[b q 2]
+        time_src = None,      # int[b q]
+        time_tgt = None,      # int[b q]
+        time_camera = None,   # int[b q]
+        queries = None,       # float[b q d]
+        points = None,        # float[b q 3]
+        video_lens = None,    # int[b]
+        query_lens = None,    # int[b q]
+        encoded_video = None,
+        times = None,
+        noised_points = None, # float[b q 3]
+        return_intermediates = False
     ):
-        max_time = video.shape[1]
+        inferencing = not exists(points)
+        batch, max_time = video.shape[:2]
+
+        # route to another function if inferencing and decoder is doing flow matching
+
+        if self.dec_use_flow_matching and inferencing and (not exists(noised_points) and not exists(times)):
+            return self.flow_matching_sample(video, coors = coors, time_src = time_src, time_tgt = time_tgt, time_camera = time_camera, video_lens = video_lens, query_lens = query_lens)
 
         # embedding to queries
 
@@ -274,22 +362,58 @@ class D4RT(Module):
 
             queries = self.norm_queries(queries)
 
+        # maybe embed noise
+
         max_queries = queries.shape[1]
+
+        if self.dec_use_flow_matching:
+            if not inferencing:
+                # training
+
+                assert not exists(noised_points)
+
+                times = torch.randint(0, self.flow_match_timesteps, (batch, max_queries, 1), device = self.device) / self.flow_match_timesteps
+
+                padded_times = pad_right_ndim_to(times, 3)
+
+                noise = torch.randn_like(points)
+                noise = noise * self.flow_match_noise_std
+
+                noised_points = noise.lerp(points, padded_times)
+
+            else:
+                # inferencing
+
+                assert exists(noised_points) and exists(times)
+
+                if times.ndim == 0:
+                    times = rearrange(times, ' -> 1')
+                if times.ndim == 1:
+                    times = repeat(times, '1 -> b q 1', b = batch, q = max_queries)
+                elif times.ndim == 2:
+                    times = rearrange(times, 'b q -> b q 1')
+
+            noised_points_and_times = cat((noised_points, times), dim = -1)
+
+            noise_embed = self.noised_and_times_to_embed(noised_points_and_times)
+
+            queries = queries + noise_embed
 
         # self attention
 
         video_mask = maybe(lens_to_mask)(video_lens, max_time)
 
-        global_spatial_repr = self.to_global_spatial_repr(video, mask = video_mask)
+        if not exists(encoded_video):
+            encoded_video = self.video_encoder(video, mask = video_mask)
 
-        global_spatial_repr, inverse_pack_spacetime = pack_with_inverse(global_spatial_repr, 'b * d')
-
-        # cross attention
+        global_spatial_repr, inverse_pack_spacetime = pack_with_inverse(encoded_video, 'b * d')
 
         global_spatial_repr_mask = None
 
         if exists(video_mask):
             global_spatial_repr_mask = repeat(video_mask, 'b t -> b (t s)', s = global_spatial_repr.shape[1] // video_mask.shape[1])
+
+        # decoder cross attention
 
         queried = self.cross_attender(queries, context = global_spatial_repr, context_mask = global_spatial_repr_mask)
 
@@ -297,8 +421,15 @@ class D4RT(Module):
 
         pred = self.to_pred(queried)
 
-        if not exists(points):
-            return pred
+        # intermediates
+
+        intermediates = Intermediates(pred, encoded_video, queries)
+
+        if inferencing:
+            if not return_intermediates:
+                return pred
+
+            return pred, intermediates
 
         query_mask = maybe(lens_to_mask)(query_lens, max_queries)
         var_len_queries = exists(query_mask)
@@ -308,7 +439,7 @@ class D4RT(Module):
         if var_len_queries:
             loss = loss[query_mask].mean()
 
-        if not return_pred:
+        if not return_intermediates:
             return loss
 
-        return loss, pred
+        return loss, intermediates
