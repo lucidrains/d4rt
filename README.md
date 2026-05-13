@@ -2,7 +2,7 @@
 
 ## d4rt (wip)
 
-Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, from Deepmind
+Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, by Chuhan Zhang et al. from Deepmind
 
 ## install
 
