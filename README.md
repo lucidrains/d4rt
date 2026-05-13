@@ -2,15 +2,7 @@
 
 ## d4rt (wip)
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, by Chuhan Zhang et al. from Deepmind
-=======
-Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, from Deepmind
->>>>>>> a5d1860 (readme)
-=======
-Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, by Chuhan Zhang et al. from Deepmind
->>>>>>> ecef15a (author)
 
 ## install
 
@@ -130,5 +122,17 @@ assert pred.shape == (2, 5, 3)
     archivePrefix = {arXiv},
     primaryClass = {cs.CV},
     url     = {https://arxiv.org/abs/2511.13720},
+}
+```
+
+```bibtex
+@misc{charpentier2024gptbertboth,
+    title   = {GPT or BERT: why not both?},
+    author  = {Lucas Georges Gabriel Charpentier and David Samuel},
+    year    = {2024},
+    eprint  = {2410.24159},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CL},
+    url     = {https://arxiv.org/abs/2410.24159},
 }
 ```

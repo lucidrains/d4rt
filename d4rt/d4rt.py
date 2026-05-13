@@ -1,9 +1,9 @@
 from __future__ import annotations
-from collections import namedtuple
+from typing import NamedTuple
 
 import torch
 import torch.nn.functional as F
-from torch import nn, cat, pi, tensor, is_tensor
+from torch import nn, cat, pi, tensor, is_tensor, Tensor
 from torch.nn import Module, ModuleList, Sequential
 
 from x_transformers import Encoder, CrossAttender, Attention, FeedForward
@@ -17,7 +17,15 @@ from torch_einops_utils import pack_with_inverse, lens_to_mask, maybe, pad_right
 
 # constants
 
-Intermediates = namedtuple('Intermediates', ('pred', 'encoded_video', 'queries'))
+class Intermediates(NamedTuple):
+    pred: Tensor
+    encoded_video: Tensor
+    queries: Tensor
+    video_hiddens: list[Tensor] | None = None
+
+class VideoEncoderIntermediates(NamedTuple):
+    hiddens: list[Tensor]
+    last_causal_hidden: Tensor | None = None
 
 # helpers
 
@@ -89,6 +97,7 @@ class VideoEncoder(Module):
         image_size,
         patch_size,
         max_time_len,
+        time_causal_depth = 0,
         channels = 3,
         dim_head = 64,
         heads = 8,
@@ -97,6 +106,8 @@ class VideoEncoder(Module):
         ff_kwargs: dict = dict()
     ):
         super().__init__()
+
+        self.time_causal_depth = time_causal_depth
 
         dim_patch = channels * patch_size * patch_size
 
@@ -108,11 +119,12 @@ class VideoEncoder(Module):
 
         self.layers = ModuleList([])
 
-        for _ in range(depth):
+        for ind in range(depth):
+            is_causal = ind < time_causal_depth
 
             spatial_attn = Attention(dim = dim, dim_head = dim_head, heads = heads, **attn_kwargs)
 
-            time_attn = Attention(dim = dim, dim_head = dim_head, heads = heads, **attn_kwargs)
+            time_attn = Attention(dim = dim, dim_head = dim_head, heads = heads, causal = is_causal, **attn_kwargs)
 
             ff = FeedForward(dim = dim, glu = ff_glu, **ff_kwargs)
 
@@ -133,8 +145,9 @@ class VideoEncoder(Module):
             mask = repeat(mask, 'b ... -> (b s) ...', s = tokens.shape[-2])
 
         hiddens = []
+        last_causal_hidden = None
 
-        for spatial_attn, time_attn, ff in self.layers:
+        for ind, (spatial_attn, time_attn, ff) in enumerate(self.layers):
 
             # space attn
 
@@ -166,12 +179,15 @@ class VideoEncoder(Module):
 
             hiddens.append(tokens)
 
+            if ind == (self.time_causal_depth - 1):
+                last_causal_hidden = tokens
+
         output = self.norm(tokens)
 
         if not return_hiddens:
             return output
 
-        return output, hiddens
+        return output, VideoEncoderIntermediates(hiddens, last_causal_hidden)
 
 # main class
 
@@ -185,6 +201,7 @@ class D4RT(Module):
         video_max_time_len,
         enc_depth,
         dec_depth,
+        video_time_causal_depth = 0,
         video_channels = 3,
         enc_dim_head = 64,
         enc_heads = 8,
@@ -220,6 +237,7 @@ class D4RT(Module):
         self.video_encoder = VideoEncoder(
             dim = dim,
             depth = enc_depth,
+            time_causal_depth = video_time_causal_depth,
             dim_head = enc_dim_head,
             heads = enc_heads,
             image_size = video_image_size,
@@ -281,7 +299,7 @@ class D4RT(Module):
 
         # caching
 
-        queries = encoded_video = None
+        queries = encoded_video = video_hiddens = None
 
         # times
 
@@ -301,6 +319,7 @@ class D4RT(Module):
                 times = time,
                 noised_points = noised_points,
                 encoded_video = encoded_video,
+                video_hiddens = video_hiddens,
                 return_intermediates = True
             )
 
@@ -312,6 +331,7 @@ class D4RT(Module):
 
             encoded_video = intermediates.encoded_video
             queries = intermediates.queries
+            video_hiddens = intermediates.video_hiddens
 
         return noised_points
 
@@ -328,6 +348,7 @@ class D4RT(Module):
         video_lens = None,    # int[b]
         query_lens = None,    # int[b q]
         encoded_video = None,
+        video_hiddens = None,
         times = None,
         noised_points = None, # float[b q 3]
         return_intermediates = False
@@ -404,7 +425,8 @@ class D4RT(Module):
         video_mask = maybe(lens_to_mask)(video_lens, max_time)
 
         if not exists(encoded_video):
-            encoded_video = self.video_encoder(video, mask = video_mask)
+            encoded_video, video_encoder_intermediates = self.video_encoder(video, mask = video_mask, return_hiddens = True)
+            video_hiddens = video_encoder_intermediates.hiddens
 
         global_spatial_repr, inverse_pack_spacetime = pack_with_inverse(encoded_video, 'b * d')
 
@@ -423,7 +445,7 @@ class D4RT(Module):
 
         # intermediates
 
-        intermediates = Intermediates(pred, encoded_video, queries)
+        intermediates = Intermediates(pred, encoded_video, queries, video_hiddens)
 
         if inferencing:
             if not return_intermediates:

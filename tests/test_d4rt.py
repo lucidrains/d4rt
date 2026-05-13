@@ -4,10 +4,12 @@ param = pytest.mark.parametrize
 @param('variable_len_videos', (False, True))
 @param('variable_len_queries', (False, True))
 @param('dec_use_flow_matching', (False, True))
+@param('video_time_causal_depth', (0, 3))
 def test_d4rt(
     variable_len_videos,
     variable_len_queries,
-    dec_use_flow_matching
+    dec_use_flow_matching,
+    video_time_causal_depth
 ):
     import torch
     from d4rt.d4rt import D4RT
@@ -19,7 +21,8 @@ def test_d4rt(
         video_max_time_len = 10,
         enc_depth = 6,
         dec_depth = 6,
-        dec_use_flow_matching = dec_use_flow_matching
+        dec_use_flow_matching = dec_use_flow_matching,
+        video_time_causal_depth = video_time_causal_depth
     )
 
     videos = torch.randn(2, 10, 3, 128, 128)
@@ -50,5 +53,5 @@ def test_d4rt(
     pred = model(videos, coors = coors, time_src = time_src, time_tgt = time_tgt, time_camera = time_camera) # (2, 5, 3)
     assert pred.shape == (2, 5, 3)
 
-    _, hiddens = model.video_encoder(videos, return_hiddens = True)
-    assert isinstance(hiddens, list)
+    _, encoder_intermediates = model.video_encoder(videos, return_hiddens = True)
+    assert isinstance(encoder_intermediates.hiddens, list)
