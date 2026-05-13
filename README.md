@@ -2,7 +2,11 @@
 
 ## d4rt (wip)
 
+<<<<<<< HEAD
 Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, by Chuhan Zhang et al. from Deepmind
+=======
+Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, from Deepmind
+>>>>>>> a5d1860 (readme)
 
 ## install
 
