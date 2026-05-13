@@ -2,7 +2,7 @@
 
 ## d4rt (wip)
 
-Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, Deepmind
+Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, from Deepmind
 
 ## install
 
@@ -14,7 +14,7 @@ $ pip install d4rt
 
 ```python
 from torch import randn, randint
-from d4rt.d4rt import D4RT
+from d4rt import D4RT
 
 model = D4RT(
     dim = 512,
