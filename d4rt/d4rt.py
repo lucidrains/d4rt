@@ -305,9 +305,9 @@ class D4RT(Module):
 
         delta_time = 1. / timesteps
 
-        times = torch.linspace(0., 1., timesteps, device = self.device)
+        times = torch.linspace(0., 1., timesteps + 1, device = self.device)
 
-        for time in times:
+        for time in times[:-1]:
 
             pred, intermediates = self.forward(
                 video,
