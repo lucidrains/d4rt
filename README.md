@@ -1,6 +1,6 @@
 <img src="./d4rt.png" width="400px"></img>
 
-## d4rt (wip)
+## d4rt
 
 Implementation of [D4RT](https://d4rt-paper.github.io/), Efficiently Reconstructing Dynamic Scenes, by Chuhan Zhang et al. from Deepmind
 
@@ -36,7 +36,7 @@ time_src = randint(0, 10, (2, 5))
 time_tgt = randint(0, 10, (2, 5))
 time_camera = randint(0, 10, (2, 5))
 
-query_lens = randint(1, 5, (2,)) # handle varaible lengthed queries
+query_lens = randint(1, 5, (2,)) # handle variable lengthed queries
 
 # output
 
