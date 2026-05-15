@@ -136,3 +136,15 @@ assert pred.shape == (2, 5, 3)
     url     = {https://arxiv.org/abs/2410.24159},
 }
 ```
+
+```bibtex
+@misc{balestriero2025lejepa,
+    title   = {LeJEPA: Provable and Scalable Self-Supervised Learning Without the Heuristics},
+    author  = {Randall Balestriero and Yann LeCun},
+    year    = {2025},
+    eprint  = {2511.08544},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG},
+    url     = {https://arxiv.org/abs/2511.08544},
+}
+```

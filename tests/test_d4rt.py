@@ -5,14 +5,18 @@ param = pytest.mark.parametrize
 @param('variable_len_queries', (False, True))
 @param('dec_use_flow_matching', (False, True))
 @param('video_time_causal_depth', (0, 3))
+@param('calc_ar_loss', (False, True))
 def test_d4rt(
     variable_len_videos,
     variable_len_queries,
     dec_use_flow_matching,
-    video_time_causal_depth
+    video_time_causal_depth,
+    calc_ar_loss
 ):
     import torch
-    from d4rt.d4rt import D4RT
+    from d4rt.d4rt import D4RT, LossBreakdown, exists
+
+    has_ar = calc_ar_loss and video_time_causal_depth > 0
 
     model = D4RT(
         dim = 512,
@@ -22,7 +26,8 @@ def test_d4rt(
         enc_depth = 6,
         dec_depth = 6,
         dec_use_flow_matching = dec_use_flow_matching,
-        video_time_causal_depth = video_time_causal_depth
+        video_time_causal_depth = video_time_causal_depth,
+        video_has_latent_ar_module = has_ar
     )
 
     videos = torch.randn(2, 10, 3, 128, 128)
@@ -37,7 +42,7 @@ def test_d4rt(
 
     points = torch.randn(2, 5, 3)
 
-    loss = model(
+    result = model(
         videos,
         coors = coors,
         time_src = time_src,
@@ -46,7 +51,17 @@ def test_d4rt(
         points = points,
         video_lens = video_lens,
         query_lens = query_lens,
+        calc_ar_loss = has_ar,
+        return_loss_breakdown = has_ar
     )
+
+    if has_ar:
+        loss, loss_breakdown = result
+        assert isinstance(loss_breakdown, LossBreakdown)
+        assert exists(loss_breakdown.ar_loss)
+        assert exists(loss_breakdown.ar_loss_breakdown)
+    else:
+        loss = result
 
     loss.backward()
 

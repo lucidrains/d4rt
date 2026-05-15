@@ -8,6 +8,8 @@ from torch.nn import Module, ModuleList, Sequential
 
 from x_transformers import Encoder, CrossAttender, Attention, FeedForward
 
+from x_mlps_pytorch import create_mlp
+
 # ein notation
 
 import einx
@@ -16,6 +18,11 @@ from einops.layers.torch import Rearrange
 from torch_einops_utils import pack_with_inverse, lens_to_mask, maybe, pad_right_ndim_to
 
 # constants
+
+class LossBreakdown(NamedTuple):
+    recon_loss: Tensor
+    ar_loss: Tensor | None = None
+    ar_loss_breakdown: tuple | None = None
 
 class Intermediates(NamedTuple):
     pred: Tensor
@@ -34,6 +41,9 @@ def exists(v):
 
 def divisible_by(num, den):
     return (num % den) == 0
+
+def l2norm(t):
+    return F.normalize(t, dim = -1, p = 2)
 
 # function for the patch embedding in the query
 
@@ -61,6 +71,45 @@ def extract_patches(
     patches = padded_video[batch_inds, time_inds, :, y, x]
     return rearrange(patches, 'b q p1 p2 c -> b q c p1 p2')
 
+# sigreg
+
+def calc_sigreg_loss(
+    x,
+    num_slices = 1024,
+    domain = (-5, 5),
+    num_knots = 17
+):
+    # Randall Balestriero - https://arxiv.org/abs/2511.08544
+
+    dim, device = x.shape[-1], x.device
+
+    # slice sampling
+
+    rand_projs = torch.randn((num_slices, dim), device = device)
+    rand_projs = l2norm(rand_projs)
+
+    # integration points
+
+    t = torch.linspace(*domain, num_knots, device = device)
+
+    # theoretical CF for N(0, 1) and Gauss. window
+
+    exp_f = (-0.5 * t.square()).exp()
+
+    # empirical CF
+
+    x_t = torch.einsum('... d, m d -> ... m', x, rand_projs)
+    x_t = rearrange(x_t, '... m -> (...) m')
+
+    x_t = rearrange(x_t, 'n m -> n m 1') * t
+    ecf = (1j * x_t).exp().mean(dim = 0)
+
+    # weighted L2 distance
+
+    err = ecf.sub(exp_f).abs().square().mul(exp_f)
+
+    return torch.trapezoid(err, t, dim = -1).mean()
+
 # fourier embed
 
 class FourierEmbed(Module):
@@ -85,6 +134,66 @@ class FourierEmbed(Module):
         rand_proj = self.proj(coors.float())
         rand_proj = rearrange(rand_proj, '... two d -> ... (two d)')
         return torch.cos(2 * pi * rand_proj)
+
+# latent ar
+
+class LatentAutoregressive(Module):
+    def __init__(
+        self,
+        dim,
+        expansion_factor = 2.,
+        sigreg_loss_weight = 1.
+    ):
+        super().__init__()
+        dim_hidden = int(dim * expansion_factor)
+
+        self.norm = nn.RMSNorm(dim)
+        self.to_projection = create_mlp(dim_hidden, 1, dim_in = dim, dim_out = dim)
+        self.to_prediction = create_mlp(dim_hidden, 1, dim_in = dim, dim_out = dim)
+
+        self.sigreg_loss_weight = sigreg_loss_weight
+
+    def forward(
+        self,
+        hiddens,
+        mask = None
+    ):
+        hiddens = self.norm(hiddens)
+        projected = self.to_projection(hiddens)
+
+        # sigreg from lejepa
+
+        sigreg_input = projected
+
+        if exists(mask):
+            sigreg_input = sigreg_input[mask]
+
+        sigreg_loss = calc_sigreg_loss(sigreg_input)
+
+        # autoregression loss
+
+        past, future = projected[:, :-1], projected[:, 1:]
+
+        pred_future = self.to_prediction(past)
+
+        # cosine sim loss
+
+        ar_loss = F.mse_loss(l2norm(pred_future), l2norm(future), reduction = 'none' if exists(mask) else 'mean')
+
+        if exists(mask):
+            mask = mask[:, :-1] & mask[:, 1:]
+            ar_loss = ar_loss[mask].mean()
+
+        # losses
+
+        loss = (
+            ar_loss +
+            sigreg_loss * self.sigreg_loss_weight
+        )
+
+        loss_breakdown = (ar_loss, sigreg_loss)
+
+        return loss, loss_breakdown
 
 # video self attention encoder
 
@@ -202,6 +311,7 @@ class D4RT(Module):
         enc_depth,
         dec_depth,
         video_time_causal_depth = 0,
+        video_has_latent_ar_module = True,
         video_channels = 3,
         enc_dim_head = 64,
         enc_heads = 8,
@@ -247,6 +357,10 @@ class D4RT(Module):
             attn_kwargs = video_enc_attn_kwargs,
             ff_kwargs = video_enc_ff_kwargs
         )
+
+        self.video_has_latent_ar_module = video_has_latent_ar_module
+        if self.video_has_latent_ar_module:
+            self.video_latent_ar = LatentAutoregressive(dim)
 
         # decoder
 
@@ -351,7 +465,9 @@ class D4RT(Module):
         video_hiddens = None,
         times = None,
         noised_points = None, # float[b q 3]
-        return_intermediates = False
+        calc_ar_loss = False,
+        return_intermediates = False,
+        return_loss_breakdown = False
     ):
         inferencing = not exists(points)
         batch, max_time = video.shape[:2]
@@ -424,6 +540,8 @@ class D4RT(Module):
 
         video_mask = maybe(lens_to_mask)(video_lens, max_time)
 
+        video_encoder_intermediates = None
+
         if not exists(encoded_video):
             encoded_video, video_encoder_intermediates = self.video_encoder(video, mask = video_mask, return_hiddens = True)
             video_hiddens = video_encoder_intermediates.hiddens
@@ -453,15 +571,47 @@ class D4RT(Module):
 
             return pred, intermediates
 
+        # reconstruction loss
+
         query_mask = maybe(lens_to_mask)(query_lens, max_queries)
         var_len_queries = exists(query_mask)
 
-        loss = F.mse_loss(pred, points, reduction = 'none' if var_len_queries else 'mean')
+        recon_loss = F.mse_loss(pred, points, reduction = 'none' if var_len_queries else 'mean')
 
         if var_len_queries:
-            loss = loss[query_mask].mean()
+            recon_loss = recon_loss[query_mask].mean()
 
-        if not return_intermediates:
+        # maybe latent autoregressive loss on causal hiddens
+
+        ar_loss = ar_loss_breakdown = None
+
+        if calc_ar_loss:
+            assert self.video_has_latent_ar_module, '`video_has_latent_ar_module` must be set to True on D4RT'
+
+            ar_loss = self.zero
+            last_causal_hidden = video_encoder_intermediates.last_causal_hidden if exists(video_encoder_intermediates) else None
+
+            if exists(last_causal_hidden):
+                ar_loss, ar_loss_breakdown = self.video_latent_ar(last_causal_hidden, mask = video_mask)
+
+        # total loss
+
+        loss = recon_loss
+
+        if exists(ar_loss):
+            loss = loss + ar_loss
+
+        loss_breakdown = LossBreakdown(recon_loss, ar_loss, ar_loss_breakdown)
+
+        if not (return_intermediates or return_loss_breakdown):
             return loss
 
-        return loss, intermediates
+        ret = (loss,)
+
+        if return_loss_breakdown:
+            ret = (*ret, loss_breakdown)
+
+        if return_intermediates:
+            ret = (*ret, intermediates)
+
+        return ret
