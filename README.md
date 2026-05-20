@@ -68,6 +68,12 @@ pred = model(
 assert pred.shape == (2, 5, 3)
 ```
 
+## contribute
+
+Just add your code and your tests in the `tests/` folder and run `pytest` in the project root
+
+Vibing with attention models are welcomed
+
 ## citations
 
 ```bibtex
