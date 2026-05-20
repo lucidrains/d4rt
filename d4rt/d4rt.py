@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import NamedTuple
+from typing import NamedTuple, Callable
 
 import torch
 import torch.nn.functional as F
@@ -323,6 +323,7 @@ class D4RT(Module):
         dec_use_flow_matching = False, # turn the decoder into conditional flow matching with clean prediction
         flow_match_timesteps = 4,
         flow_match_noise_std = 1.,
+        loss_fn: str | Callable = 'mse'
     ):
         super().__init__()
 
@@ -384,6 +385,20 @@ class D4RT(Module):
         self.flow_match_noise_std = flow_match_noise_std
 
         self.noised_and_times_to_embed = nn.Linear(4, dim, bias = False) if dec_use_flow_matching else None
+
+        # loss function
+
+        assert callable(loss_fn) or loss_fn in {'mse', 'smooth_l1'}
+
+        if not callable(loss_fn):
+            if loss_fn == 'mse':
+                loss_fn = F.mse_loss
+            elif loss_fn == 'smooth_l1':
+                loss_fn = F.smooth_l1_loss
+
+        self.loss_fn = loss_fn
+
+        # zero
 
         self.register_buffer('zero', tensor(0.), persistent = False)
 
@@ -576,7 +591,9 @@ class D4RT(Module):
         query_mask = maybe(lens_to_mask)(query_lens, max_queries)
         var_len_queries = exists(query_mask)
 
-        recon_loss = F.mse_loss(pred, points, reduction = 'none' if var_len_queries else 'mean')
+        recon_loss_kwargs = dict(reduction = 'none' if var_len_queries else 'mean')
+
+        recon_loss = self.loss_fn(pred, points, **recon_loss_kwargs)
 
         if var_len_queries:
             recon_loss = recon_loss[query_mask].mean()
