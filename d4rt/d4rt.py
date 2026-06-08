@@ -320,6 +320,7 @@ class D4RT(Module):
         video_enc_attn_kwargs: dict = dict(),
         video_enc_ff_kwargs: dict = dict(),
         cross_attender_kwargs: dict = dict(),
+        inverted_cross_attention = True,
         dec_use_flow_matching = False, # turn the decoder into conditional flow matching with clean prediction
         flow_match_timesteps = 4,
         flow_match_noise_std = 1.,
@@ -370,6 +371,7 @@ class D4RT(Module):
             depth = dec_depth,
             heads = dec_heads,
             attn_dim_head = dec_dim_head,
+            cross_attn_inverted_attention = inverted_cross_attention, # https://openreview.net/forum?id=WgQZNoQ5AB
             **cross_attender_kwargs
         )
 
