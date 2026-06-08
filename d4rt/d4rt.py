@@ -572,7 +572,10 @@ class D4RT(Module):
 
         # decoder cross attention
 
-        queried = self.cross_attender(queries, context = global_spatial_repr, context_mask = global_spatial_repr_mask)
+        query_mask = maybe(lens_to_mask)(query_lens, max_queries)
+        var_len_queries = exists(query_mask)
+
+        queried = self.cross_attender(queries, mask = query_mask, context = global_spatial_repr, context_mask = global_spatial_repr_mask)
 
         # prediction
 
@@ -589,9 +592,6 @@ class D4RT(Module):
             return pred, intermediates
 
         # reconstruction loss
-
-        query_mask = maybe(lens_to_mask)(query_lens, max_queries)
-        var_len_queries = exists(query_mask)
 
         recon_loss_kwargs = dict(reduction = 'none' if var_len_queries else 'mean')
 
