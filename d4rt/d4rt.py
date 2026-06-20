@@ -1,9 +1,10 @@
 from __future__ import annotations
 from typing import NamedTuple, Callable
+from functools import partial
 
 import torch
 import torch.nn.functional as F
-from torch import nn, cat, pi, tensor, is_tensor, Tensor
+from torch import nn, cat, stack, pi, tensor, is_tensor, Tensor
 from torch.nn import Module, ModuleList, Sequential
 
 from x_transformers import Encoder, CrossAttender, Attention, FeedForward
@@ -15,7 +16,7 @@ from x_mlps_pytorch import create_mlp
 import einx
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-from torch_einops_utils import pack_with_inverse, lens_to_mask, maybe, pad_right_ndim_to
+from torch_einops_utils import pack_with_inverse, lens_to_mask, maybe, pad_right_ndim_to, pad_right_at_dim, tree_map_tensor
 
 # constants
 
@@ -110,7 +111,9 @@ def calc_sigreg_loss(
 
     return torch.trapezoid(err, t, dim = -1).mean()
 
-# fourier embed
+# classes
+
+LayerNormNoBias = partial(nn.LayerNorm, bias = False)
 
 class FourierEmbed(Module):
     def __init__(
@@ -205,14 +208,14 @@ class VideoEncoder(Module):
         depth,
         image_size,
         patch_size,
-        max_time_len,
         time_causal_depth = 0,
         channels = 3,
         dim_head = 64,
         heads = 8,
         ff_glu = True,
         attn_kwargs: dict = dict(),
-        ff_kwargs: dict = dict()
+        ff_kwargs: dict = dict(),
+        encode_spatial_motion = False
     ):
         super().__init__()
 
@@ -223,8 +226,24 @@ class VideoEncoder(Module):
         self.patch_to_tokens = Sequential(
             Rearrange('b t c (h p1) (w p2) -> b t (h w) (p1 p2 c)', p1 = patch_size, p2 = patch_size),
             nn.Linear(dim_patch, dim),
-            nn.LayerNorm(dim, bias = False)
+            LayerNormNoBias(dim)
         )
+
+        self.patch_size = patch_size
+
+        self.axial_pos_emb = Sequential(
+            create_mlp(dim, depth = 2, dim_in = 3, activation = nn.SiLU(), bias = False),
+            LayerNormNoBias(dim)
+        )
+
+        self.encode_spatial_motion = encode_spatial_motion
+
+        if self.encode_spatial_motion:
+            self.motion_patch_to_tokens = Sequential(
+                Rearrange('b t c (h p1) (w p2) -> b t (h w) (p1 p2 c)', p1 = patch_size, p2 = patch_size),
+                nn.Linear(dim_patch, dim),
+                LayerNormNoBias(dim)
+            )
 
         self.layers = ModuleList([])
 
@@ -239,7 +258,7 @@ class VideoEncoder(Module):
 
             self.layers.append(ModuleList([spatial_attn, time_attn, ff]))
 
-        self.norm = nn.LayerNorm(dim, bias = False)
+        self.norm = LayerNormNoBias(dim)
 
     def forward(
         self,
@@ -248,10 +267,51 @@ class VideoEncoder(Module):
         return_hiddens = False
     ): # float[b n d]
 
+        batch, time, channels, height, width = video.shape
+        device, dtype = video.device, video.dtype
+
         tokens = self.patch_to_tokens(video) # float[b t s d]
+
+        # dynamic axial positional embedding
+
+        h_patches, w_patches = height // self.patch_size, width // self.patch_size
+
+        time_coors = torch.arange(time, device = device, dtype = dtype)
+        y_coors = torch.linspace(-1., 1., steps = h_patches, device = device, dtype = dtype)
+        x_coors = torch.linspace(-1., 1., steps = w_patches, device = device, dtype = dtype)
+
+        grid = stack(torch.meshgrid(time_coors, y_coors, x_coors, indexing = 'ij'), dim = -1)
+        grid = rearrange(grid, 't h w c -> t (h w) c')
+
+        pos_emb = self.axial_pos_emb(grid)
+
+        tokens = tokens + pos_emb
+
+        # maybe encode motion
+
+        if self.encode_spatial_motion:
+            motion_video = video[:, 1:] - video[:, :-1]
+
+            motion_tokens = self.motion_patch_to_tokens(motion_video)
+            motion_tokens = motion_tokens + pos_emb[:-1]
+            motion_tokens = pad_right_at_dim(motion_tokens, 1, dim = 1)
+
+            interleaved_tokens = stack((tokens, motion_tokens), dim = 2)
+            tokens = rearrange(interleaved_tokens, 'b t two ... -> b (t two) ...')
+
+            if exists(mask):
+                motion_mask = mask[:, :-1] & mask[:, 1:]
+                motion_mask = pad_right_at_dim(motion_mask, 1, dim = 1, value = False)
+
+                interleaved_mask = stack((mask, motion_mask), dim = 2)
+                mask = rearrange(interleaved_mask, 'b t two -> b (t two)')
+
+        # expand mask for spatial attention if needed
 
         if exists(mask):
             mask = repeat(mask, 'b ... -> (b s) ...', s = tokens.shape[-2])
+
+        # transformer layers
 
         hiddens = []
         last_causal_hidden = None
@@ -291,6 +351,18 @@ class VideoEncoder(Module):
             if ind == (self.time_causal_depth - 1):
                 last_causal_hidden = tokens
 
+        # maybe unpack original frames and motion tokens
+
+        if self.encode_spatial_motion:
+
+            def extract_frames(t):
+                frames, motion = rearrange(t, 'b (t two) ... -> two b t ...', two = 2)
+                return frames
+
+            tokens, hiddens, last_causal_hidden = tree_map_tensor(extract_frames, (tokens, hiddens, last_causal_hidden))
+
+        # final norm
+
         output = self.norm(tokens)
 
         if not return_hiddens:
@@ -319,6 +391,7 @@ class D4RT(Module):
         dec_heads = 8,
         video_enc_attn_kwargs: dict = dict(),
         video_enc_ff_kwargs: dict = dict(),
+        encode_spatial_motion = False,
         cross_attender_kwargs: dict = dict(),
         inverted_cross_attention = True,
         dec_use_flow_matching = False, # turn the decoder into conditional flow matching with clean prediction
@@ -342,7 +415,7 @@ class D4RT(Module):
         self.time_tgt_embed = nn.Parameter(torch.randn(video_max_time_len, dim) * 1e-2)
         self.time_camera_embed = nn.Parameter(torch.randn(video_max_time_len, dim) * 1e-2)
 
-        self.norm_queries = nn.LayerNorm(dim, bias = False)
+        self.norm_queries = LayerNormNoBias(dim)
 
         # encoder
 
@@ -354,10 +427,10 @@ class D4RT(Module):
             heads = enc_heads,
             image_size = video_image_size,
             patch_size = video_patch_size,
-            max_time_len = video_max_time_len,
             channels = video_channels,
             attn_kwargs = video_enc_attn_kwargs,
-            ff_kwargs = video_enc_ff_kwargs
+            ff_kwargs = video_enc_ff_kwargs,
+            encode_spatial_motion = encode_spatial_motion
         )
 
         self.video_has_latent_ar_module = video_has_latent_ar_module

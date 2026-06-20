@@ -8,6 +8,7 @@ param = pytest.mark.parametrize
 @param('calc_ar_loss', (False, True))
 @param('loss_fn', ('mse', 'smooth_l1'))
 @param('inverted_cross_attention', (False, True))
+@param('encode_spatial_motion', (False, True))
 def test_d4rt(
     variable_len_videos,
     variable_len_queries,
@@ -15,7 +16,8 @@ def test_d4rt(
     video_time_causal_depth,
     calc_ar_loss,
     loss_fn,
-    inverted_cross_attention
+    inverted_cross_attention,
+    encode_spatial_motion
 ):
     import torch
     from d4rt.d4rt import D4RT, LossBreakdown, exists
@@ -33,7 +35,8 @@ def test_d4rt(
         video_time_causal_depth = video_time_causal_depth,
         video_has_latent_ar_module = has_ar,
         loss_fn = loss_fn,
-        inverted_cross_attention = inverted_cross_attention
+        inverted_cross_attention = inverted_cross_attention,
+        encode_spatial_motion = encode_spatial_motion
     )
 
     videos = torch.randn(2, 10, 3, 128, 128)
